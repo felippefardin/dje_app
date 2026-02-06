@@ -3,56 +3,85 @@ require 'vendor/autoload.php';
 
 use PhpOffice\PhpSpreadsheet\IOFactory;
 
-$arquivosParaLer = [
-    'PJE-Busca ACERVO.xlsx', 
-    'data.xlsx',
-    'DJEBUSCA.xlsx'
-];
+// Libera memória máxima e tempo de execução
+ini_set('memory_limit', '-1');
+set_time_limit(0);
 
+$arquivosParaLer = glob("*.{xlsx,xls}", GLOB_BRACE);
 $acervoMestre = [];
 
-echo "Iniciando consolidação do acervo...\n";
+echo "Iniciando consolidacao ultra-leve...\n";
 
 foreach ($arquivosParaLer as $nomeArquivo) {
-    if (!file_exists($nomeArquivo)) {
-        echo "Aviso: Arquivo $nomeArquivo não encontrado. Pulando...\n";
-        continue;
-    }
+    if (strpos(strtoupper($nomeArquivo), 'RESULTADO') !== false) continue;
+    
+    echo "Lendo $nomeArquivo... ";
+    
+    try {
+        $reader = IOFactory::createReaderForFile($nomeArquivo);
+        $reader->setReadDataOnly(true);
+        $spreadsheet = $reader->load($nomeArquivo);
+        $worksheet = $spreadsheet->getActiveSheet();
+        
+        $colProc = null;
+        $colNome = null;
+        $count = 0;
 
-    echo "Lendo $nomeArquivo...\n";
-    $spreadsheet = IOFactory::load($nomeArquivo);
-    $rows = $spreadsheet->getActiveSheet()->toArray(null, true, true, true);
-    $header = array_shift($rows);
-
-    // Identifica as colunas de Processo e Procurador/Responsável
-    $colProc = 'A';
-    $colNome = 'J'; // Padrão do seu PJE-Busca
-
-    foreach ($header as $col => $val) {
-        $val = mb_strtolower(trim($val));
-        if ($val == 'processo' || $val == 'número de processo judicial') $colProc = $col;
-        if ($val == 'procurador' || $val == 'responsável') $colNome = $col;
-    }
-
-    foreach ($rows as $row) {
-        $proc = preg_replace('/[^0-9]/', '', (string)$row[$colProc]);
-        $nome = trim($row[$colNome] ?? '');
-
-        if ($proc && $nome && $nome !== '0') {
-            $acervoMestre[$proc] = $nome;
+        // Lê apenas as 2 primeiras linhas para mapear os cabeçalhos
+        foreach ($worksheet->getRowIterator(1, 2) as $row) {
+            $cellIterator = $row->getCellIterator();
+            $cellIterator->setIterateOnlyExistingCells(false);
+            foreach ($cellIterator as $cell) {
+                $val = mb_strtolower(trim((string)$cell->getValue()));
+                $col = $cell->getColumn();
+                
+                // Mapeia colunas de processo
+                if (in_array($val, ['processo', 'número de processo judicial', 'numeroProcesso', 'nº do processo'])) {
+                    $colProc = $col;
+                }
+                // Mapeia colunas de nome
+                if (in_array($val, ['procurador', 'responsável', 'responsavel', 'nome'])) {
+                    $colNome = $col;
+                }
+            }
+            if ($colProc && $colNome) break;
         }
+
+        if ($colProc && $colNome) {
+            // Itera pelas linhas a partir da segunda
+            foreach ($worksheet->getRowIterator(2) as $row) {
+                $p = trim((string)$worksheet->getCell($colProc . $row->getRowIndex())->getValue());
+                $n = trim((string)$worksheet->getCell($colNome . $row->getRowIndex())->getValue());
+
+                // Limpeza: remove pontos, traços e zeros à esquerda
+                $pLimpo = ltrim(preg_replace('/[^0-9]/', '', $p), '0');
+
+                if ($pLimpo !== '' && $n !== '' && $n !== '0') {
+                    $acervoMestre[$pLimpo] = $n;
+                    $count++;
+                }
+            }
+            echo "($count encontrados)\n";
+        } else {
+            echo "(Colunas nao identificadas - Verifique os nomes na planilha)\n";
+        }
+
+        // Limpeza de memória agressiva
+        $spreadsheet->disconnectWorksheets();
+        unset($spreadsheet);
+        gc_collect_cycles();
+
+    } catch (Exception $e) {
+        echo "Erro: " . $e->getMessage() . "\n";
     }
 }
 
-// Salva o arquivo CSV final
+// Salva o CSV
+echo "Salvando acervo.csv com " . count($acervoMestre) . " registros...\n";
 $fp = fopen('acervo.csv', 'w');
-fputcsv($fp, ['Processo', '', '', '', '', '', '', '', '', 'Procurador'], ';'); // Cabeçalho Fake para manter compatibilidade
-
+fputcsv($fp, ['Processo', '','','','','','','','','Procurador'], ';'); 
 foreach ($acervoMestre as $proc => $nome) {
-    // Escreve o processo na col 0 e o nome na col 9 (índice J)
-    $linha = [$proc, '', '', '', '', '', '', '', '', $nome];
-    fputcsv($fp, $linha, ';');
+    fputcsv($fp, [$proc, '', '', '', '', '', '', '', '', $nome], ';');
 }
-
 fclose($fp);
-echo "Pronto! Arquivo 'acervo.csv' gerado com sucesso com " . count($acervoMestre) . " processos mapeados.\n";
+echo "Sucesso!\n";

@@ -9,28 +9,34 @@ use PhpOffice\PhpSpreadsheet\Shared\Date;
 use PhpOffice\PhpSpreadsheet\Style\Alignment;
 
 /* ===============================
-   CARREGAR ACERVO (BASE DE DADOS)
+   CARREGAR ACERVO (DADOS MESTRES)
 ================================ */
 function carregarAcervo() {
     $lista = [];
     $caminho = __DIR__ . '/acervo.csv';
     if (!file_exists($caminho)) return $lista;
 
-    // Aumentamos o limite de memória para acervos grandes
-    ini_set('memory_limit', '512M');
-
     $h = fopen($caminho, 'r');
-    fgetcsv($h, 2000, ';'); 
+    // Lê o cabeçalho para tentar achar a coluna do Procurador dinamicamente
+    $cabecalho = fgetcsv($h, 2000, ';'); 
+    $indexProcurador = 9; // Padrão: Coluna J
+
+    if ($cabecalho) {
+        foreach($cabecalho as $idx => $nomeCol) {
+            if (mb_strtolower(trim($nomeCol)) == 'procurador') {
+                $indexProcurador = $idx;
+                break;
+            }
+        }
+    }
 
     while (($d = fgetcsv($h, 2000, ';')) !== false) {
-        // Limpeza rigorosa do número do processo
-        $proc = preg_replace('/[^0-9]/', '', trim($d[0] ?? ''));
-        // Captura o procurador (Coluna J / índice 9)
-        $nome = trim($d[9] ?? ''); 
+        // Limpeza do processo para o acervo (remove zeros à esquerda)
+        $proc = ltrim(preg_replace('/[^0-9]/', '', trim($d[0] ?? '')), '0');
+        $nome = trim($d[$indexProcurador] ?? ''); 
         
         if ($proc !== '' && $nome !== '') {
-            // Guardamos o processo como chave para busca instantânea
-            $lista[$proc][] = $nome;
+            $lista[$proc] = $nome;
         }
     }
     fclose($h);
@@ -38,7 +44,7 @@ function carregarAcervo() {
 }
 
 /* ===============================
-   LER ARQUIVO (MAPEAMENTO DINÂMICO)
+   LER ARQUIVO (MAPEAMENTO ROBUSTO)
 ================================ */
 function lerArquivo($arquivoTmp) {
     $spreadsheet = IOFactory::load($arquivoTmp);
@@ -51,17 +57,17 @@ function lerArquivo($arquivoTmp) {
     foreach ($header as $col => $name) {
         $name = mb_strtolower(trim($name), 'UTF-8');
         
-        if (strpos($name, 'processo') !== false) $mapping['processo'] = $col;
-        if (strpos($name, 'tipo') !== false && strpos($name, 'comunica') !== false) $mapping['tipo'] = $col;
-        if (strpos($name, 'data') !== false && strpos($name, 'comunica') !== false) $mapping['dataCom'] = $col;
+        if ($name === 'numeroprocesso' || $name === 'processo') { $mapping['processo'] = $col; }
+        elseif (!isset($mapping['processo']) && strpos($name, 'processo') !== false) { $mapping['processo'] = $col; }
+        
+        if (strpos($name, 'tipocomunicacao') !== false || $name === 'tipo' || strpos($name, 'tipo de comunica') !== false) $mapping['tipo'] = $col;
+        if (strpos($name, 'datacomunicacao') !== false || strpos($name, 'data da comunica') !== false || $name === 'data') $mapping['dataCom'] = $col;
         if (strpos($name, 'final') !== false && strpos($name, 'ciencia') !== false) $mapping['dataFimCiencia'] = $col;
         if ($name === 'prazo') $mapping['prazo'] = $col;
-        if (strpos($name, 'tipo') !== false && strpos($name, 'prazo') !== false) $mapping['tipoPrazo'] = $col;
+        if (strpos($name, 'tipoprazo') !== false || strpos($name, 'tipo de prazo') !== false) $mapping['tipoPrazo'] = $col;
         
-        // Prioriza 'dataCiente' (data visualizado) ou 'data da ciência'
-        if (strpos($name, 'dataciente') !== false) {
-            $mapping['dataCiencia'] = $col;
-        } elseif (!isset($mapping['dataCiencia']) && strpos($name, 'data') !== false && strpos($name, 'ciência') !== false) {
+        // Prioriza data visualizado
+        if (strpos($name, 'dataciente') !== false || strpos($name, 'data da ciência') !== false) {
             $mapping['dataCiencia'] = $col;
         }
         
@@ -70,17 +76,18 @@ function lerArquivo($arquivoTmp) {
 
     $dados = [];
     foreach ($rows as $row) {
-        if (empty($row[$mapping['processo'] ?? 'A'])) continue;
+        $valProc = $row[$mapping['processo'] ?? 'B'] ?? '';
+        if (empty($valProc)) continue;
 
         $dados[] = [
-            'processo'       => $row[$mapping['processo'] ?? 'A'] ?? '',
-            'tipo'           => $row[$mapping['tipo'] ?? 'B'] ?? '',
-            'dataCom'        => $row[$mapping['dataCom'] ?? 'C'] ?? '',
-            'dataFimCiencia' => $row[$mapping['dataFimCiencia'] ?? 'D'] ?? '',
-            'prazo'          => $row[$mapping['prazo'] ?? 'E'] ?? '',
-            'tipoPrazo'      => $row[$mapping['tipoPrazo'] ?? 'F'] ?? '',
-            'dataCiencia'    => $row[$mapping['dataCiencia'] ?? 'G'] ?? '',
-            'cienciaAuto'    => $row[$mapping['cienciaAuto'] ?? 'H'] ?? ''
+            'processo'       => $valProc,
+            'tipo'           => $row[$mapping['tipo'] ?? 'L'] ?? '',
+            'dataCom'        => $row[$mapping['dataCom'] ?? 'M'] ?? '',
+            'dataFimCiencia' => $row[$mapping['dataFimCiencia'] ?? 'S'] ?? '',
+            'prazo'          => $row[$mapping['prazo'] ?? 'T'] ?? '',
+            'tipoPrazo'      => $row[$mapping['tipoPrazo'] ?? 'U'] ?? '',
+            'dataCiencia'    => $row[$mapping['dataCiencia'] ?? 'AE'] ?? '',
+            'cienciaAuto'    => $row[$mapping['cienciaAuto'] ?? 'AG'] ?? ''
         ];
     }
     return $dados;
@@ -96,8 +103,6 @@ if (isset($_POST['processar']) && isset($_FILES['arquivo'])) {
     } catch (Exception $e) { die('Erro: ' . $e->getMessage()); }
 
     $saida = new Spreadsheet();
-    
-    // DEFINIR FONTE ARIAL PARA TODO O ARQUIVO
     $saida->getDefaultStyle()->getFont()->setName('Arial')->setSize(10);
 
     $res = $saida->getActiveSheet();
@@ -114,24 +119,25 @@ if (isset($_POST['processar']) && isset($_FILES['arquivo'])) {
 
     $lr = 2; $ln = 2;
 
+    $formatData = function($val) {
+        if (empty($val) || $val == '1899-12-31' || $val == '0') return '';
+        try {
+            if (is_numeric($val) && $val > 1000) {
+                return Date::excelToDateTimeObject($val)->format('d/m/Y');
+            }
+            $dt = new DateTime(str_replace('/', '-', $val));
+            return $dt->format('d/m/Y');
+        } catch (Exception $e) { return $val; }
+    };
+
     foreach ($linhas as $l) {
-        $procLimpo = preg_replace('/[^0-9]/', '', (string)$l['processo']);
+        // Limpa o processo para busca (remove zeros à esquerda para cruzar com o acervo)
+        $buscaChave = ltrim(preg_replace('/[^0-9]/', '', (string)$l['processo']), '0');
 
         $procurador = 'PROCURADOR NÃO LOCALIZADO';
-        if (isset($acervo[$procLimpo])) {
-            $procurador = implode(' / ', array_unique($acervo[$procLimpo]));
+        if (isset($acervo[$buscaChave])) {
+            $procurador = $acervo[$buscaChave];
         }
-
-        $formatData = function($val) {
-            if (empty($val) || $val == '1899-12-31') return '';
-            try {
-                if (is_numeric($val) && $val > 1000) {
-                    return Date::excelToDateTimeObject($val)->format('d/m/Y');
-                }
-                $dt = new DateTime(str_replace('/', '-', $val));
-                return $dt->format('d/m/Y');
-            } catch (Exception $e) { return $val; }
-        };
 
         // Escrita das colunas
         $res->setCellValueExplicit('A'.$lr, $l['processo'], DataType::TYPE_STRING);
@@ -142,7 +148,7 @@ if (isset($_POST['processar']) && isset($_FILES['arquivo'])) {
         $pVal = preg_replace('/[^0-9]/', '', (string)$l['prazo']);
         $res->setCellValueExplicit('E'.$lr, ($pVal !== '' ? (int)$pVal : 0), DataType::TYPE_NUMERIC);
         
-        $res->setCellValue('F'.$lr, strtoupper($l['tipoPrazo']));
+        $res->setCellValue('F'.$lr, strtoupper((string)$l['tipoPrazo']));
         $res->setCellValue('G'.$lr, $formatData($l['dataCiencia']));
         $res->setCellValue('H'.$lr, $l['cienciaAuto']);
         $res->setCellValue('I'.$lr, $procurador);
